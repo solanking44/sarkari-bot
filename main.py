@@ -1,4 +1,7 @@
 import logging
+import os
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
@@ -13,6 +16,19 @@ from handlers.admin import broadcast_command, add_job_command
 from handlers.ai_helper import get_ai_response
 
 logging.basicConfig(level=logging.INFO)
+
+# --- Render Port Binding (Health Check Server) ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def run_health_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+# ------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await force_sub_middleware(update, context):
@@ -35,7 +51,6 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("❌ Format: `DD-MM-YYYY | DD-MM-YYYY`", parse_mode="Markdown")
 
     else:
-        # Fast AI Response using Groq Llama3 Engine
         status_msg = await update.message.reply_text("⚡ Groq AI is thinking...")
         ai_reply = await get_ai_response(text)
         await status_msg.edit_text(f"🤖 **Groq AI Answer:**\n\n{ai_reply}", parse_mode="Markdown")
@@ -78,6 +93,9 @@ async def post_init(application):
     await init_db()
 
 if __name__ == "__main__":
+    # Health check web server ko background thread me start karein
+    Thread(target=run_health_server, daemon=True).start()
+    
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start))
