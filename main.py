@@ -42,7 +42,7 @@ LOG_CHANNEL_ID = "-1004379498816"
 FORCE_JOIN_LINK = "https://t.me/+UYT1dE4cXuA5NTVI"
 DB_FILE = "bot_database.db"
 
-# ================= SQLITE DATABASE ENGINE (LOCAL/CLOUD PERSISTENCE) =================
+# ================= SQLITE DATABASE ENGINE =================
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -71,13 +71,22 @@ def init_db():
             reasoning_correct INTEGER DEFAULT 0
         )
     ''')
-    
-    # Notes Table
+
+    # Anti-Repeat Tracking Table for Questions
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS notes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        CREATE TABLE IF NOT EXISTS asked_questions (
             user_id INTEGER,
-            note_text TEXT
+            question_id INTEGER,
+            PRIMARY KEY (user_id, question_id)
+        )
+    ''')
+
+    # Anti-Repeat Tracking Table for Quotes
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_quotes (
+            user_id INTEGER,
+            quote_id INTEGER,
+            PRIMARY KEY (user_id, quote_id)
         )
     ''')
 
@@ -97,50 +106,45 @@ init_db()
 def get_db_connection():
     return sqlite3.connect(DB_FILE)
 
-# ================= DATA BANKS =================
-MOCK_BANK = {
-    "gk": [
-        {"q": "Bharat ka sabse bada national park kaun sa hai?", "options": ["Gir", "Hemis", "Kaziranga", "Jim Corbett"], "ans": 1, "exp": "Hemis National Park (Ladakh) sabse bada hai."},
-        {"q": "NITI Aayog ke ex-officio Chairman kaun hote hain?", "options": ["Rashtrapati", "Vitta Mantri", "Pradhan Mantri", "RBI Governor"], "ans": 2, "exp": "Bharat ke Pradhan Mantri iske adhyaksh hote hain."}
-    ],
-    "maths": [
-        {"q": "Agar ek rectangle ki length 20% badhe aur breadth 10% ghate, toh area me kya change hoga?", "options": ["+8%", "+10%", "-8%", "+12%"], "ans": 0, "exp": "Net change = 20 - 10 - (20x10)/100 = +8% increase."},
-        {"q": "Pehli 5 prime numbers ka average kya hoga?", "options": ["5.2", "5.6", "6.0", "4.8"], "ans": 1, "exp": "Prime numbers = 2, 3, 5, 7, 11. Sum = 28/5 = 5.6."}
-    ],
-    "reasoning": [
-        {"q": "Odd one out chunie: Apple, Mango, Potato, Banana", "options": ["Apple", "Mango", "Potato", "Banana"], "ans": 2, "exp": "Potato ek vegetable/stem hai, baki sab fruits hain."},
-        {"q": "Agar CAT = 24 aur DOG = 26, toh RAT = ?", "options": ["39", "40", "38", "42"], "ans": 0, "exp": "R(18) + A(1) + T(20) = 39."}
-    ]
-}
+# ================= LARGE EXPANDED QUESTION BANK =================
+MOCK_BANK = [
+    # GK Questions (ID 1-6)
+    {"id": 1, "subj": "gk", "q": "Bharat ka sabse bada national park kaun sa hai?", "options": ["Gir", "Hemis", "Kaziranga", "Jim Corbett"], "ans": 1, "exp": "Hemis National Park (Ladakh) sabse bada hai."},
+    {"id": 2, "subj": "gk", "q": "NITI Aayog ke ex-officio Chairman kaun hote hain?", "options": ["Rashtrapati", "Vitta Mantri", "Pradhan Mantri", "RBI Governor"], "ans": 2, "exp": "Bharat ke Pradhan Mantri iske adhyaksh hote hain."},
+    {"id": 3, "subj": "gk", "q": "Bharat ka pehla Atomic Power Station kahan sthapit hua tha?", "options": ["Tarapur", "Rawatbhata", "Kudankulam", "Narora"], "ans": 0, "exp": "Tarapur (Maharashtra) me 1969 me shuru hua tha."},
+    {"id": 4, "subj": "gk", "q": "Bhakra Nangal Dam kis nadi par bana hai?", "options": ["Ganga", "Sutlej", "Yamuna", "Narmada"], "ans": 1, "exp": "Sutlej nadi par Himachal/Punjab border par hai."},
+    {"id": 5, "subj": "gk", "q": "Indian Constitution me total kitne Fundamental Duties hain?", "options": ["10", "11", "12", "9"], "ans": 1, "exp": "Article 51A ke antargat total 11 Fundamental Duties hain."},
+    {"id": 6, "subj": "gk", "q": "RBC (Red Blood Cells) ka lifespan kitne dino ka hota hai?", "options": ["90 Days", "120 Days", "150 Days", "60 Days"], "ans": 1, "exp": "RBC ka ausat jeevankaal 120 din hota hai."},
+
+    # Maths Questions (ID 7-12)
+    {"id": 7, "subj": "maths", "q": "Agar ek rectangle ki length 20% badhe aur breadth 10% ghate, toh area me kya change hoga?", "options": ["+8%", "+10%", "-8%", "+12%"], "ans": 0, "exp": "Net change = 20 - 10 - (20x10)/100 = +8% increase."},
+    {"id": 8, "subj": "maths", "q": "Pehli 5 prime numbers ka average kya hoga?", "options": ["5.2", "5.6", "6.0", "4.8"], "ans": 1, "exp": "Prime numbers = 2, 3, 5, 7, 11. Sum = 28/5 = 5.6."},
+    {"id": 9, "subj": "maths", "q": "Agar 15 aadmi kisi kaam ko 20 din me karte hain, toh 10 aadmi kitne din me karenge?", "options": ["25 Din", "30 Din", "35 Din", "40 Din"], "ans": 1, "exp": "(15 × 20) / 10 = 30 din."},
+    {"id": 10, "subj": "maths", "q": "Simple Interest par ₹1000 ki rashi 2 saal me ₹1200 ho jaati hai, toh Rate % kya hai?", "options": ["8%", "10%", "12%", "15%"], "ans": 1, "exp": "SI = 200. Rate = (200 × 100) / (1000 × 2) = 10%."},
+    {"id": 11, "subj": "maths", "q": "Cube ka side 4cm hai, uska total surface area kya hoga?", "options": ["64 sq.cm", "96 sq.cm", "48 sq.cm", "32 sq.cm"], "ans": 1, "exp": "TSA = 6 × a² = 6 × 16 = 96 sq.cm."},
+    {"id": 12, "subj": "maths", "q": "Agar speed 72 km/h hai, toh m/s me conversion kya hoga?", "options": ["15 m/s", "20 m/s", "25 m/s", "30 m/s"], "ans": 1, "exp": "72 × (5/18) = 20 m/s."},
+
+    # Reasoning Questions (ID 13-18)
+    {"id": 13, "subj": "reasoning", "q": "Odd one out chunie: Apple, Mango, Potato, Banana", "options": ["Apple", "Mango", "Potato", "Banana"], "ans": 2, "exp": "Potato ek vegetable hai, baki sab fruits hain."},
+    {"id": 14, "subj": "reasoning", "q": "Agar CAT = 24 aur DOG = 26, toh RAT = ?", "options": ["39", "40", "38", "42"], "ans": 0, "exp": "R(18) + A(1) + T(20) = 39."},
+    {"id": 15, "subj": "reasoning", "q": "Series complete karein: 2, 6, 12, 20, 30, ?", "options": ["40", "42", "44", "36"], "ans": 1, "exp": "Differences are +4, +6, +8, +10, +12. So 30 + 12 = 42."},
+    {"id": 16, "subj": "reasoning", "q": "Agar South-East North ban jaye, toh West kya banega?", "options": ["South-East", "North-East", "South-West", "North-West"], "ans": 0, "exp": "135 degree anti-clockwise shift hota hai."},
+    {"id": 17, "subj": "reasoning", "q": "Blood Relation: Mohan ne kaha, 'Wah mere pita ki ekloti beti ka beta hai.' Mohan usse kaise related hai?", "options": ["Maternal Uncle (Mama)", "Father", "Brother", "Grandfather"], "ans": 0, "exp": "Pita ki beti = Behan, Behan ka beta = Bhanja. Mohan uska Mama hai."},
+    {"id": 18, "subj": "reasoning", "q": "Clock me 3:00 baje Hour hand aur Minute hand ke beech kitna angle hota hai?", "options": ["60°", "90°", "120°", "45°"], "ans": 1, "exp": "3:00 baje exact 90 degree ka angle banta hai."}
+]
 
 MOTIVATIONAL_QUOTES = [
-    "🔥 *'Mehnat itni khamoshi se karo ki kamyabi shor macha de!'*",
-    "💡 *'Every hour you spend studying today brings you closer to your uniform/officer seat.'*",
-    "🚀 *'Sarkari Naukri tabhi milegi jab consistency top-notch hogi!'*",
-    "🎯 *'Push yourself, because no one else is going to do it for you.'*"
+    {"id": 1, "quote": "🔥 *'Mehnat itni khamoshi se karo ki kamyabi shor macha de!'*"},
+    {"id": 2, "quote": "💡 *'Every hour you spend studying today brings you closer to your uniform/officer seat.'*"},
+    {"id": 3, "quote": "🚀 *'Sarkari Naukri tabhi milegi jab consistency top-notch hogi!'*"},
+    {"id": 4, "quote": "🎯 *'Push yourself, because no one else is going to do it for you.'*"},
+    {"id": 5, "quote": "🌟 *'Safalta ek din me nahi milti, lekin ek din zaroor milti hai!'*"},
+    {"id": 6, "quote": "⚡ *'Sapne wo nahi jo hum sote hue dekhte hain, sapne wo hain jo hame sone nahi dete.'*"},
+    {"id": 7, "quote": "🏆 *'Jo aaj dard sehra hai, kal wahi jeet ki khushi manayega!'*"},
+    {"id": 8, "quote": "📚 *'Aapki padhai hi aapki sabse badi takat hai. Keep learning daily!'*"}
 ]
 
 # ================= HELPER FUNCTIONS =================
-def shorten_link(long_url: str) -> str:
-    try:
-        params = urllib.parse.urlencode({'api': GPLINKS_API_KEY, 'url': long_url})
-        api_url = f"https://gplinks.in/api?{params}"
-        req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req) as response:
-            data = json.loads(response.read().decode('utf-8'))
-            if data.get("status") == "success":
-                return data.get("shortenedUrl")
-    except Exception as e:
-        print(f"GPLinks Error: {e}")
-    return long_url
-
-async def send_log(context: ContextTypes.DEFAULT_TYPE, message: str):
-    try:
-        await context.bot.send_message(chat_id=LOG_CHANNEL_ID, text=f"📋 **BOT LOG:**\n{message}", parse_mode="Markdown")
-    except Exception as e:
-        print(f"Log Error: {e}")
-
-# DB User Register / Update Helper
 def register_or_get_user(user_id, first_name):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -151,6 +155,65 @@ def register_or_get_user(user_id, first_name):
         cursor.execute("INSERT INTO stats (user_id) VALUES (?)", (user_id,))
         conn.commit()
     conn.close()
+
+def get_unseen_question(user_id, subject=None):
+    """Fetch a question that user has NEVER seen before"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT question_id FROM asked_questions WHERE user_id = ?", (user_id,))
+    seen_ids = set(row[0] for row in cursor.fetchall())
+    
+    available_qs = [q for q in MOCK_BANK if q["id"] not in seen_ids]
+    if subject:
+        available_qs = [q for q in available_qs if q["subj"] == subject]
+
+    # Agar saare questions khatam ho gaye, toh reset kar do anti-repeat memory for fresh loop
+    if not available_qs:
+        if subject:
+            cursor.execute("DELETE FROM asked_questions WHERE user_id = ? AND question_id IN (SELECT id FROM asked_questions)", (user_id,))
+            available_qs = [q for q in MOCK_BANK if q["subj"] == subject]
+        else:
+            cursor.execute("DELETE FROM asked_questions WHERE user_id = ?", (user_id,))
+            available_qs = MOCK_BANK
+        conn.commit()
+
+    selected_q = random.choice(available_qs)
+    
+    # Mark as seen
+    cursor.execute("INSERT OR IGNORE INTO asked_questions (user_id, question_id) VALUES (?, ?)", (user_id, selected_q["id"]))
+    conn.commit()
+    conn.close()
+    
+    return selected_q
+
+def get_unseen_quote(user_id):
+    """Fetch a motivational quote that user has NOT seen recently"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT quote_id FROM user_quotes WHERE user_id = ?", (user_id,))
+    seen_ids = set(row[0] for row in cursor.fetchall())
+    
+    available_quotes = [q for q in MOTIVATIONAL_QUOTES if q["id"] not in seen_ids]
+    
+    if not available_quotes:
+        cursor.execute("DELETE FROM user_quotes WHERE user_id = ?", (user_id,))
+        conn.commit()
+        available_quotes = MOTIVATIONAL_QUOTES
+
+    selected = random.choice(available_quotes)
+    cursor.execute("INSERT OR IGNORE INTO user_quotes (user_id, quote_id) VALUES (?, ?)", (user_id, selected["id"]))
+    conn.commit()
+    conn.close()
+    
+    return selected["quote"]
+
+async def send_log(context: ContextTypes.DEFAULT_TYPE, message: str):
+    try:
+        await context.bot.send_message(chat_id=LOG_CHANNEL_ID, text=f"📋 **BOT LOG:**\n{message}", parse_mode="Markdown")
+    except Exception:
+        pass
 
 # ================= COMMAND HANDLERS =================
 
@@ -208,8 +271,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = (
         f"🚀 **Welcome {user.first_name} to Sarkari Super-Bot PRO!**\n\n"
-        "✨ **India's #1 AI & Gamified Preparation Portal** ✨\n\n"
-        "👉 Complete daily challenges, solve PYQs, track your goals, and win leaderboard ranks!"
+        "✨ **India's #1 Anti-Repeat AI Preparation Portal** ✨\n\n"
+        "👉 Ab har baar interactive quiz, speed test aur motivational quotes **bilkul naye aur bina repeat hue** milenge!"
     )
     await update.effective_message.reply_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
 
@@ -263,7 +326,7 @@ async def daily_challenge(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if last_daily and (today - last_daily).days == 1:
                 new_streak = streak + 1
             else:
-                new_streak = 1  # Reset streak if missed
+                new_streak = 1  
                 
             bonus_points = 50 + (new_streak * 10)
             cursor.execute("UPDATE users SET points = points + ?, streak = ?, last_daily = ? WHERE user_id = ?", 
@@ -280,86 +343,23 @@ async def daily_challenge(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     await update.effective_message.reply_text(msg, parse_mode="Markdown")
 
-async def study_plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 2:
-        await update.effective_message.reply_text("⚠️ Usage: `/plan <EXAM_NAME> <DAYS>`\nExample: `/plan SSC 60`", parse_mode="Markdown")
-        return
-    
-    exam = context.args[0].upper()
-    try:
-        days = int(context.args[1])
-    except ValueError:
-        await update.effective_message.reply_text("⚠️ Days specify karne ke liye valid number enter karein.")
-        return
-
-    phase1 = round(days * 0.5)
-    phase2 = round(days * 0.3)
-    phase3 = days - phase1 - phase2
-
-    plan_text = (
-        f"🎯 **SMART STUDY PLAN GENERATOR ({exam} - {days} DAYS)**\n\n"
-        f"📌 **Phase 1 (Day 1 - {phase1}): Concept Building**\n"
-        f"• Complete Basic to Advanced Syllabus\n"
-        f"• Daily 2 Hours Quantitative Aptitude + 2 Hours Reasoning\n\n"
-        f"📌 **Phase 2 (Day {phase1+1} - {phase1+phase2}): PYQ & Subject Tests**\n"
-        f"• Practice 50 PYQs daily per subject\n"
-        f"• Focus on weak areas & speed shortcuts\n\n"
-        f"📌 **Phase 3 (Day {phase1+phase2+1} - {days}): Full Mock & Revision**\n"
-        f"• Attempt 1 Full Length Mock Test Daily\n"
-        f"• Deep analysis of incorrect attempts\n\n"
-        f"💡 *All the best for {exam}! Stick to this routine daily.*"
-    )
-    await update.effective_message.reply_text(plan_text, parse_mode="Markdown")
-
-async def doubt_solver(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = " ".join(context.args).lower()
-    if not query:
-        await update.effective_message.reply_text("⚠️ Usage: `/doubt <your doubt query>`\nExample: `/doubt integration by parts`", parse_mode="Markdown")
-        return
-
-    # Keyword AI Logic (Rule-based Offline Engine)
-    if "integration" in query or "calculus" in query:
-        ans = "📐 **Integration by Parts Rule:**\n`∫ u v dx = u ∫v dx - ∫ (u' ∫v dx) dx`\nUse **ILATE** priority rule to select `u`."
-    elif "rectangle" in query or "area" in query:
-        ans = "📐 **Rectangle Formulas:**\n• Area = `Length × Breadth`\n• Perimeter = `2 × (Length + Breadth)`"
-    elif "article" in query or "constitution" in query:
-        ans = "🏛️ **Important Articles:**\n• Fundamental Rights: Articles 12 to 35\n• Emergency Provisions: Articles 352, 356, 360"
-    else:
-        ans = f"🤖 **AI Doubt Tutor Response:**\n\nRegarding: *'{query}'*\n👉 **Solution Concept:** Practice foundational standard formulas & solve 5 previous year exam questions on this topic."
-
-    await update.effective_message.reply_text(ans, parse_mode="Markdown")
-
 async def speed_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    subj = random.choice(["gk", "maths", "reasoning"])
-    q = random.choice(MOCK_BANK[subj])
+    user_id = update.effective_user.id
+    q = get_unseen_question(user_id) # Fetches strictly fresh question
     
     keyboard = []
     for idx, opt in enumerate(q["options"]):
-        keyboard.append([InlineKeyboardButton(f"{chr(65+idx)}. {opt}", callback_data=f"ansmock_{subj}_{idx}")])
+        keyboard.append([InlineKeyboardButton(f"{chr(65+idx)}. {opt}", callback_data=f"ansmock_{q['id']}_{q['subj']}_{idx}")])
         
     await update.effective_message.reply_text(
-        f"⚡ **RAPID FIRE SPEED TEST ({subj.upper()}):**\n⏱️ *Fast Response Required!*\n\n{q['q']}", 
+        f"⚡ **UNIQUE SPEED TEST ({q['subj'].upper()}):**\n⏱️ *Fast Response Required!*\n\n{q['q']}", 
         reply_markup=InlineKeyboardMarkup(keyboard), 
         parse_mode="Markdown"
     )
 
-async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    goal_text = " ".join(context.args)
-    if not goal_text:
-        await update.effective_message.reply_text("⚠️ Usage: `/goal <your exam goal>`\nExample: `/goal Target SSC CGL 2026 Rank under 500`", parse_mode="Markdown")
-        return
-        
-    user_id = update.effective_user.id
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET goal = ? WHERE user_id = ?", (goal_text, user_id))
-    conn.commit()
-    conn.close()
-    
-    await update.effective_message.reply_text(f"🎯 **Target Goal Locked!**\n\n`{goal_text}`", parse_mode="Markdown")
-
 async def motivate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    quote = random.choice(MOTIVATIONAL_QUOTES)
+    user_id = update.effective_user.id
+    quote = get_unseen_quote(user_id) # Unique quote per click
     await update.effective_message.reply_text(f"✨ **STUDY MOTIVATION BOOSTER** ✨\n\n{quote}", parse_mode="Markdown")
 
 async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -453,24 +453,26 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("ansmock_"):
         parts = data.split("_")
-        subj, ans_idx = parts[1], int(parts[2])
-        q = MOCK_BANK[subj][0]
+        q_id, subj, ans_idx = int(parts[1]), parts[2], int(parts[3])
         
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        # Find exact question from bank
+        q = next((item for item in MOCK_BANK if item["id"] == q_id), None)
         
-        if ans_idx == q["ans"]:
-            cursor.execute("UPDATE users SET points = points + 20 WHERE user_id = ?", (user_id,))
-            cursor.execute("UPDATE stats SET total_quizzes = total_quizzes + 1, correct_answers = correct_answers + 1 WHERE user_id = ?", (user_id,))
-            res = f"✅ **Correct Answer! (+20 Points)**\n\n💡 **Explanation:** {q['exp']}"
-        else:
-            cursor.execute("UPDATE stats SET total_quizzes = total_quizzes + 1 WHERE user_id = ?", (user_id,))
-            res = f"❌ **Incorrect!**\n\n💡 **Explanation:** {q['exp']}"
+        if q:
+            conn = get_db_connection()
+            cursor = conn.cursor()
             
-        conn.commit()
-        conn.close()
-        
-        await update.effective_message.reply_text(res, parse_mode="Markdown")
+            if ans_idx == q["ans"]:
+                cursor.execute("UPDATE users SET points = points + 20 WHERE user_id = ?", (user_id,))
+                cursor.execute(f"UPDATE stats SET total_quizzes = total_quizzes + 1, correct_answers = correct_answers + 1, {subj}_correct = {subj}_correct + 1 WHERE user_id = ?", (user_id,))
+                res = f"✅ **Correct Answer! (+20 Points)**\n\n💡 **Explanation:** {q['exp']}"
+            else:
+                cursor.execute("UPDATE stats SET total_quizzes = total_quizzes + 1 WHERE user_id = ?", (user_id,))
+                res = f"❌ **Incorrect!**\n\n💡 **Explanation:** {q['exp']}"
+                
+            conn.commit()
+            conn.close()
+            await update.effective_message.reply_text(res, parse_mode="Markdown")
 
 # ================= MAIN RUNNER =================
 
@@ -481,17 +483,14 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("report", report_command))
     app.add_handler(CommandHandler("daily", daily_challenge))
-    app.add_handler(CommandHandler("plan", study_plan_command))
-    app.add_handler(CommandHandler("doubt", doubt_solver))
     app.add_handler(CommandHandler("speedtest", speed_test))
-    app.add_handler(CommandHandler("goal", set_goal))
     app.add_handler(CommandHandler("motivate", motivate))
     app.add_handler(CommandHandler("leaderboard", leaderboard_command))
 
     # Handlers
     app.add_handler(CallbackQueryHandler(button_click))
 
-    print("🤖 Sarkari Super-Bot PRO Edition with SQLite is Running...")
+    print("🤖 Sarkari Super-Bot PRO (Anti-Repeat Mode) is Running...")
     app.run_polling()
 
 if __name__ == "__main__":
