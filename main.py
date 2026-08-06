@@ -1,7 +1,9 @@
 import os
+import sqlite3
 import datetime
 import asyncio
 import json
+import random
 import threading
 import urllib.request
 import urllib.parse
@@ -21,17 +23,16 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Sarkari Super-Bot is running fine!")
+        self.wfile.write(b"Sarkari Super-Bot Pro Edition is Running!")
 
     def log_message(self, format, *args):
-        return  # Terminal log clean rakhne ke liye
+        return
 
 def start_health_check_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-# Start Web Server Thread
 threading.Thread(target=start_health_check_server, daemon=True).start()
 
 # ================= CONFIGURATION =================
@@ -39,18 +40,64 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 GPLINKS_API_KEY = "28f7b134d7e185764342aa508fdb2a43b1e93970"
 LOG_CHANNEL_ID = "-1004379498816"
 FORCE_JOIN_LINK = "https://t.me/+UYT1dE4cXuA5NTVI"
-ADMIN_ID = os.getenv("ADMIN_ID", "123456789")
+DB_FILE = "bot_database.db"
 
-# ================= IN-MEMORY DATABASE =================
-USER_NOTES = {}
-USER_POINTS = {}
-USER_STREAKS = {}
-USER_REFERRALS = {}
-USER_STATE = {}
-USER_LEVELS = {}
-ALL_USER_IDS = set()
+# ================= SQLITE DATABASE ENGINE (LOCAL/CLOUD PERSISTENCE) =================
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    # Users Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            first_name TEXT,
+            points INTEGER DEFAULT 50,
+            streak INTEGER DEFAULT 0,
+            last_daily DATE,
+            level TEXT DEFAULT 'Beginner Aspirant',
+            goal TEXT DEFAULT 'Not Set'
+        )
+    ''')
+    
+    # Performance Stats Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS stats (
+            user_id INTEGER PRIMARY KEY,
+            total_quizzes INTEGER DEFAULT 0,
+            correct_answers INTEGER DEFAULT 0,
+            gk_correct INTEGER DEFAULT 0,
+            maths_correct INTEGER DEFAULT 0,
+            reasoning_correct INTEGER DEFAULT 0
+        )
+    ''')
+    
+    # Notes Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            note_text TEXT
+        )
+    ''')
 
-# Mock Questions Bank
+    # Referrals Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS referrals (
+            referrer_id INTEGER,
+            referred_id INTEGER UNIQUE
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def get_db_connection():
+    return sqlite3.connect(DB_FILE)
+
+# ================= DATA BANKS =================
 MOCK_BANK = {
     "gk": [
         {"q": "Bharat ka sabse bada national park kaun sa hai?", "options": ["Gir", "Hemis", "Kaziranga", "Jim Corbett"], "ans": 1, "exp": "Hemis National Park (Ladakh) sabse bada hai."},
@@ -66,10 +113,15 @@ MOCK_BANK = {
     ]
 }
 
-# ================= HELPER FUNCTIONS =================
+MOTIVATIONAL_QUOTES = [
+    "🔥 *'Mehnat itni khamoshi se karo ki kamyabi shor macha de!'*",
+    "💡 *'Every hour you spend studying today brings you closer to your uniform/officer seat.'*",
+    "🚀 *'Sarkari Naukri tabhi milegi jab consistency top-notch hogi!'*",
+    "🎯 *'Push yourself, because no one else is going to do it for you.'*"
+]
 
+# ================= HELPER FUNCTIONS =================
 def shorten_link(long_url: str) -> str:
-    """GPLinks Shortener Integration"""
     try:
         params = urllib.parse.urlencode({'api': GPLINKS_API_KEY, 'url': long_url})
         api_url = f"https://gplinks.in/api?{params}"
@@ -83,200 +135,247 @@ def shorten_link(long_url: str) -> str:
     return long_url
 
 async def send_log(context: ContextTypes.DEFAULT_TYPE, message: str):
-    """Log Activity to Channel"""
     try:
         await context.bot.send_message(chat_id=LOG_CHANNEL_ID, text=f"📋 **BOT LOG:**\n{message}", parse_mode="Markdown")
     except Exception as e:
         print(f"Log Error: {e}")
 
-def calculate_exact_age(dob_str: str, cutoff_str: str):
-    """Exact Age Calculator"""
-    dob = datetime.datetime.strptime(dob_str, "%d-%m-%Y").date()
-    cutoff = datetime.datetime.strptime(cutoff_str, "%d-%m-%Y").date()
-    
-    years = cutoff.year - dob.year
-    months = cutoff.month - dob.month
-    days = cutoff.day - dob.day
-
-    if days < 0:
-        months -= 1
-        days += 30
-    if months < 0:
-        years -= 1
-        months += 12
-
-    return years, months, days
+# DB User Register / Update Helper
+def register_or_get_user(user_id, first_name):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    user = cursor.fetchone()
+    if not user:
+        cursor.execute("INSERT INTO users (user_id, first_name, points) VALUES (?, ?, ?)", (user_id, first_name, 50))
+        cursor.execute("INSERT INTO stats (user_id) VALUES (?)", (user_id,))
+        conn.commit()
+    conn.close()
 
 # ================= COMMAND HANDLERS =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    ALL_USER_IDS.add(user_id)
+    register_or_get_user(user_id, user.first_name)
 
-    # Handle Referral System
+    # Referral Check
     if context.args and context.args[0].startswith("ref_"):
-        referrer_id = context.args[0].replace("ref_", "")
-        if referrer_id != str(user_id) and user_id not in USER_POINTS:
-            try:
-                ref_int = int(referrer_id)
-                USER_REFERRALS[ref_int] = USER_REFERRALS.get(ref_int, 0) + 1
-                USER_POINTS[ref_int] = USER_POINTS.get(ref_int, 0) + 100
-                await context.bot.send_message(
-                    chat_id=ref_int, 
-                    text=f"🎉 **New Referral!** {user.first_name} joined using your link. Earned **+100 Points**!"
-                )
-            except Exception:
-                pass
-
-    if user_id not in USER_POINTS:
-        USER_POINTS[user_id] = 50
-        USER_LEVELS[user_id] = "Beginner Aspirant"
+        referrer_id_str = context.args[0].replace("ref_", "")
+        if referrer_id_str.isdigit():
+            referrer_id = int(referrer_id_str)
+            if referrer_id != user_id:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                try:
+                    cursor.execute("INSERT INTO referrals (referrer_id, referred_id) VALUES (?, ?)", (referrer_id, user_id))
+                    cursor.execute("UPDATE users SET points = points + 50 WHERE user_id = ?", (referrer_id,))
+                    conn.commit()
+                    await context.bot.send_message(
+                        chat_id=referrer_id,
+                        text=f"🎉 **Referral Bonus!** {user.first_name} joined using your link. Earned **+50 Points**!"
+                    )
+                except sqlite3.IntegrityError:
+                    pass
+                conn.close()
 
     await send_log(context, f"User Active: {user.full_name} (`{user_id}`)")
 
     keyboard = [
         [InlineKeyboardButton("📢 Join Official Channel", url=FORCE_JOIN_LINK)],
         [
-            InlineKeyboardButton("⏱️ Multi-Subject Mock", callback_data="select_mock_subject"),
-            InlineKeyboardButton("⚡ Ask AI Doubts", callback_data="ai_doubt")
+            InlineKeyboardButton("🧠 Offline/AI Doubt Solver", callback_data="ai_doubt"),
+            InlineKeyboardButton("📊 My Performance Report", callback_data="get_report")
         ],
         [
-            InlineKeyboardButton("📰 Current Affairs Express", callback_data="ca_express"),
-            InlineKeyboardButton("📄 Syllabus & PYQs Hub", callback_data="syllabus_hub")
+            InlineKeyboardButton("🔥 Daily Challenge / Streak", callback_data="claim_daily"),
+            InlineKeyboardButton("⚡ Speed Test (Rapid Fire)", callback_data="speedtest")
         ],
         [
-            InlineKeyboardButton("📘 Flashcards", callback_data="flashcards"),
-            InlineKeyboardButton("🗣️ Vocab & Idioms", callback_data="vocab")
+            InlineKeyboardButton("🎯 Target Study Planner", callback_data="study_planner"),
+            InlineKeyboardButton("📚 PYQ Practice Mode", callback_data="pyq_practice")
         ],
         [
-            InlineKeyboardButton("🧮 Negative Score Calc", callback_data="calc_score"),
-            InlineKeyboardButton("🎂 Precise Age Calc", callback_data="calc_age_info")
+            InlineKeyboardButton("🎁 Refer & Earn (+50 Pts)", callback_data="referral"),
+            InlineKeyboardButton("🏆 Leaderboard", callback_data="leaderboard")
         ],
         [
-            InlineKeyboardButton("📅 Target Exam Timers", callback_data="exam_timer"),
-            InlineKeyboardButton("📐 Formula Bank", callback_data="formula_categories")
-        ],
-        [
-            InlineKeyboardButton("🎁 Refer & Earn", callback_data="referral"),
-            InlineKeyboardButton("🏆 Live Leaderboard", callback_data="leaderboard")
-        ],
-        [
-            InlineKeyboardButton("📄 PDF & Form Assistant", callback_data="pdf_tools"),
-            InlineKeyboardButton("📊 My Progress Card", callback_data="dashboard")
+            InlineKeyboardButton("💡 Daily Motivation", callback_data="motivate"),
+            InlineKeyboardButton("📊 Full Dashboard", callback_data="dashboard")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     msg = (
-        f"🚀 **Welcome {user.first_name} to Sarkari Super-Bot!**\n\n"
-        "India's #1 Ultra-Advanced Exam Preparation Portal.\n"
-        "Select any feature below to start learning:"
+        f"🚀 **Welcome {user.first_name} to Sarkari Super-Bot PRO!**\n\n"
+        "✨ **India's #1 AI & Gamified Preparation Portal** ✨\n\n"
+        "👉 Complete daily challenges, solve PYQs, track your goals, and win leaderboard ranks!"
     )
-    # Fixed line: effective_message automatically handles both direct messages and callback query messages
     await update.effective_message.reply_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = (
-        "🛠️ **Mega Command Suite:**\n\n"
-        "• `/start` - Launch Main Navigation Menu\n"
-        "• `/notes <text>` - Save personal study note\n"
-        "• `/mynotes` - View all saved notes\n"
-        "• `/age <DD-MM-YYYY> <Cutoff DD-MM-YYYY>` - Precise age calculation\n"
-        "• `/remind <mins> <msg>` - Set live study alarm\n"
-        "• `/timetable <daily_hours>` - Generate instant custom schedule\n"
-        "• `/eligible <10th/12th/Graduate>` - Instant exam eligibility list\n"
-        "• `/shorten <url>` - Convert link to GPLinks monetized link\n"
-        "• `/dashboard` - Check rank, level & score"
-    )
-    await update.message.reply_text(help_text, parse_mode="Markdown")
-
-async def generate_timetable(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        hours = float(context.args[0])
-        if hours < 1 or hours > 16:
-            raise ValueError()
+async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT total_quizzes, correct_answers, gk_correct, maths_correct, reasoning_correct FROM stats WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row or row[0] == 0:
+        await update.effective_message.reply_text("📊 **No performance data found!** Complete mock tests to view your report card.", parse_mode="Markdown")
+        return
         
-        gk_time = round(hours * 0.3, 1)
-        math_time = round(hours * 0.3, 1)
-        reasoning_time = round(hours * 0.2, 1)
-        revision_time = round(hours * 0.2, 1)
-
-        plan = (
-            f"📅 **Personalized Study Schedule ({hours} Hours/Day):**\n\n"
-            f"⏱️ **GK & Current Affairs:** {gk_time} Hours\n"
-            f"⏱️ **Quantitative Aptitude:** {math_time} Hours\n"
-            f"⏱️ **Reasoning & Logic:** {reasoning_time} Hours\n"
-            f"⏱️ **Revision & Mock Test:** {revision_time} Hours\n\n"
-            f"💡 *Pro Tip: Take a 5-minute break every 50 minutes of studying!*"
-        )
-        await update.message.reply_text(plan, parse_mode="Markdown")
-    except Exception:
-        await update.message.reply_text("⚠️ Usage: `/timetable <daily_study_hours>`\nExample: `/timetable 6`", parse_mode="Markdown")
-
-async def check_eligibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("⚠️ Usage: `/eligible 10th` OR `/eligible 12th` OR `/eligible Graduate`", parse_mode="Markdown")
-        return
+    total, correct, gk, maths, reasoning = row
+    acc = round((correct / total) * 100, 1) if total > 0 else 0
     
-    qual = context.args[0].lower()
-    if "10" in qual:
-        text = "🎓 **Exams Eligible for 10th Pass:**\n• SSC MTS & Havaldar\n• Railway Group D & RPF Constable\n• GD Constable (CAPF)\n• Post Office GDS"
-    elif "12" in qual:
-        text = "🎓 **Exams Eligible for 12th Pass:**\n• SSC CHSL & Stenographer\n• Railway NTPC (Undergraduate Posts)\n• NDA / NA Entrance Exam\n• State Police Constables"
+    scores = {"GK": gk, "Maths": maths, "Reasoning": reasoning}
+    strong_subject = max(scores, key=scores.get)
+    weak_subject = min(scores, key=scores.get)
+
+    report_msg = (
+        f"📊 **PERFORMANCE ANALYTICS DASHBOARD**\n\n"
+        f"📝 **Total Questions Attempted:** `{total}`\n"
+        f"✅ **Correct Answers:** `{correct}`\n"
+        f"📈 **Overall Accuracy:** `{acc}%`\n\n"
+        f"🧠 **Strong Area:** `{strong_subject}`\n"
+        f"⚠️ **Needs Improvement:** `{weak_subject}`\n\n"
+        f"💡 *Tip: Practice 10 questions daily in {weak_subject} to boost accuracy!*"
+    )
+    await update.effective_message.reply_text(report_msg, parse_mode="Markdown")
+
+async def daily_challenge(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    today = datetime.date.today()
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT points, streak, last_daily FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    
+    if row:
+        pts, streak, last_daily_str = row
+        last_daily = datetime.datetime.strptime(last_daily_str, "%Y-%m-%d").date() if last_daily_str else None
+        
+        if last_daily == today:
+            msg = f"⏳ **Already Claimed!**\n\nYou have already claimed today's streak reward.\nCurrent Streak: 🔥 **{streak} Days**"
+        else:
+            if last_daily and (today - last_daily).days == 1:
+                new_streak = streak + 1
+            else:
+                new_streak = 1  # Reset streak if missed
+                
+            bonus_points = 50 + (new_streak * 10)
+            cursor.execute("UPDATE users SET points = points + ?, streak = ?, last_daily = ? WHERE user_id = ?", 
+                           (bonus_points, new_streak, today.strftime("%Y-%m-%d"), user_id))
+            conn.commit()
+            msg = (
+                f"🔥 **DAILY STREAK BOOST CLAIMED!**\n\n"
+                f"⚡ Current Streak: **{new_streak} Days**\n"
+                f"🎁 Points Earned: **+{bonus_points} Pts**"
+            )
     else:
-        text = "🎓 **Exams Eligible for Graduates:**\n• SSC CGL & CPO\n• UPSC CSE / CDS\n• IBPS PO & Clerk / SBI PO\n• Railway NTPC (Graduate Posts)"
+        msg = "⚠️ User record not found. Type `/start` first."
+        
+    conn.close()
+    await update.effective_message.reply_text(msg, parse_mode="Markdown")
+
+async def study_plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.effective_message.reply_text("⚠️ Usage: `/plan <EXAM_NAME> <DAYS>`\nExample: `/plan SSC 60`", parse_mode="Markdown")
+        return
     
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-async def add_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    note = " ".join(context.args)
-    if not note:
-        await update.message.reply_text("⚠️ Usage: `/notes <your note here>`", parse_mode="Markdown")
-        return
-    if user_id not in USER_NOTES:
-        USER_NOTES[user_id] = []
-    USER_NOTES[user_id].append(note)
-    await update.message.reply_text("✅ Note saved! Access using `/mynotes`.", parse_mode="Markdown")
-
-async def get_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    notes = USER_NOTES.get(user_id, [])
-    if not notes:
-        await update.message.reply_text("📝 No saved notes found.", parse_mode="Markdown")
-        return
-    text = "📝 **Your Saved Exam Notes:**\n\n" + "\n".join([f"{i+1}. {n}" for i, n in enumerate(notes)])
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-async def age_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    exam = context.args[0].upper()
     try:
-        dob_str = context.args[0]
-        cutoff_str = context.args[1]
-        y, m, d = calculate_exact_age(dob_str, cutoff_str)
-        await update.message.reply_text(
-            f"🎂 **Exact Age Result:**\n\n👉 **{y} Years, {m} Months, {d} Days** as of {cutoff_str}",
-            parse_mode="Markdown"
-        )
-    except Exception:
-        await update.message.reply_text("⚠️ Format: `/age DD-MM-YYYY DD-MM-YYYY`", parse_mode="Markdown")
-
-async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        mins = int(context.args[0])
-        msg = " ".join(context.args[1:])
-        await update.message.reply_text(f"⏰ Reminder set for {mins} minutes!", parse_mode="Markdown")
-        await asyncio.sleep(mins * 60)
-        await update.message.reply_text(f"🔔 **REMINDER:** {msg}", parse_mode="Markdown")
-    except Exception:
-        await update.message.reply_text("⚠️ Usage: `/remind <minutes> <message>`", parse_mode="Markdown")
-
-async def shorten_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("⚠️ Usage: `/shorten <url>`", parse_mode="Markdown")
+        days = int(context.args[1])
+    except ValueError:
+        await update.effective_message.reply_text("⚠️ Days specify karne ke liye valid number enter karein.")
         return
-    shortened = shorten_link(context.args[0])
-    await update.message.reply_text(f"🔗 **Monetized Link:**\n{shortened}", parse_mode="Markdown")
+
+    phase1 = round(days * 0.5)
+    phase2 = round(days * 0.3)
+    phase3 = days - phase1 - phase2
+
+    plan_text = (
+        f"🎯 **SMART STUDY PLAN GENERATOR ({exam} - {days} DAYS)**\n\n"
+        f"📌 **Phase 1 (Day 1 - {phase1}): Concept Building**\n"
+        f"• Complete Basic to Advanced Syllabus\n"
+        f"• Daily 2 Hours Quantitative Aptitude + 2 Hours Reasoning\n\n"
+        f"📌 **Phase 2 (Day {phase1+1} - {phase1+phase2}): PYQ & Subject Tests**\n"
+        f"• Practice 50 PYQs daily per subject\n"
+        f"• Focus on weak areas & speed shortcuts\n\n"
+        f"📌 **Phase 3 (Day {phase1+phase2+1} - {days}): Full Mock & Revision**\n"
+        f"• Attempt 1 Full Length Mock Test Daily\n"
+        f"• Deep analysis of incorrect attempts\n\n"
+        f"💡 *All the best for {exam}! Stick to this routine daily.*"
+    )
+    await update.effective_message.reply_text(plan_text, parse_mode="Markdown")
+
+async def doubt_solver(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = " ".join(context.args).lower()
+    if not query:
+        await update.effective_message.reply_text("⚠️ Usage: `/doubt <your doubt query>`\nExample: `/doubt integration by parts`", parse_mode="Markdown")
+        return
+
+    # Keyword AI Logic (Rule-based Offline Engine)
+    if "integration" in query or "calculus" in query:
+        ans = "📐 **Integration by Parts Rule:**\n`∫ u v dx = u ∫v dx - ∫ (u' ∫v dx) dx`\nUse **ILATE** priority rule to select `u`."
+    elif "rectangle" in query or "area" in query:
+        ans = "📐 **Rectangle Formulas:**\n• Area = `Length × Breadth`\n• Perimeter = `2 × (Length + Breadth)`"
+    elif "article" in query or "constitution" in query:
+        ans = "🏛️ **Important Articles:**\n• Fundamental Rights: Articles 12 to 35\n• Emergency Provisions: Articles 352, 356, 360"
+    else:
+        ans = f"🤖 **AI Doubt Tutor Response:**\n\nRegarding: *'{query}'*\n👉 **Solution Concept:** Practice foundational standard formulas & solve 5 previous year exam questions on this topic."
+
+    await update.effective_message.reply_text(ans, parse_mode="Markdown")
+
+async def speed_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    subj = random.choice(["gk", "maths", "reasoning"])
+    q = random.choice(MOCK_BANK[subj])
+    
+    keyboard = []
+    for idx, opt in enumerate(q["options"]):
+        keyboard.append([InlineKeyboardButton(f"{chr(65+idx)}. {opt}", callback_data=f"ansmock_{subj}_{idx}")])
+        
+    await update.effective_message.reply_text(
+        f"⚡ **RAPID FIRE SPEED TEST ({subj.upper()}):**\n⏱️ *Fast Response Required!*\n\n{q['q']}", 
+        reply_markup=InlineKeyboardMarkup(keyboard), 
+        parse_mode="Markdown"
+    )
+
+async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    goal_text = " ".join(context.args)
+    if not goal_text:
+        await update.effective_message.reply_text("⚠️ Usage: `/goal <your exam goal>`\nExample: `/goal Target SSC CGL 2026 Rank under 500`", parse_mode="Markdown")
+        return
+        
+    user_id = update.effective_user.id
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET goal = ? WHERE user_id = ?", (goal_text, user_id))
+    conn.commit()
+    conn.close()
+    
+    await update.effective_message.reply_text(f"🎯 **Target Goal Locked!**\n\n`{goal_text}`", parse_mode="Markdown")
+
+async def motivate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    quote = random.choice(MOTIVATIONAL_QUOTES)
+    await update.effective_message.reply_text(f"✨ **STUDY MOTIVATION BOOSTER** ✨\n\n{quote}", parse_mode="Markdown")
+
+async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT first_name, points, streak FROM users ORDER BY points DESC LIMIT 5")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    text = "🏆 **GLOBAL ASPIRANTS LEADERBOARD** 🏆\n\n"
+    badges = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+    for idx, row in enumerate(rows):
+        name, pts, streak = row
+        text += f"{badges[idx]} **{name}** — `{pts} Pts` (🔥 {streak} Streak)\n"
+        
+    await update.effective_message.reply_text(text, parse_mode="Markdown")
 
 # ================= CALLBACK ROUTER =================
 
@@ -286,176 +385,92 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     user_id = query.from_user.id
 
-    if data == "select_mock_subject":
-        keyboard = [
-            [InlineKeyboardButton("🧠 General Knowledge", callback_data="start_mock_gk")],
-            [InlineKeyboardButton("📐 Mathematics", callback_data="start_mock_maths")],
-            [InlineKeyboardButton("🧩 Reasoning", callback_data="start_mock_reasoning")],
-            [InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]
-        ]
-        await query.message.reply_text("🎯 **Select Mock Test Subject:**", reply_markup=InlineKeyboardMarkup(keyboard))
+    if data == "get_report":
+        await report_command(update, context)
 
-    elif data.startswith("start_mock_"):
-        subj = data.replace("start_mock_", "")
-        q = MOCK_BANK[subj][0]
-        keyboard = []
-        for idx, opt in enumerate(q["options"]):
-            keyboard.append([InlineKeyboardButton(f"{chr(65+idx)}. {opt}", callback_data=f"ansmock_{subj}_{idx}")])
-        await query.message.reply_text(
-            f"⏱️ **Live Mock Test ({subj.upper()}):**\n\n{q['q']}", 
-            reply_markup=InlineKeyboardMarkup(keyboard), 
-            parse_mode="Markdown"
+    elif data == "claim_daily":
+        await daily_challenge(update, context)
+
+    elif data == "speedtest":
+        await speed_test(update, context)
+
+    elif data == "study_planner":
+        await update.effective_message.reply_text("🎯 Usage: Send `/plan <EXAM_NAME> <DAYS>` in chat to get your day-wise strategy schedule!", parse_mode="Markdown")
+
+    elif data == "pyq_practice":
+        await speed_test(update, context)
+
+    elif data == "motivate":
+        await motivate(update, context)
+
+    elif data == "ai_doubt":
+        await update.effective_message.reply_text("⚡ **AI Doubt Engine Active!**\n\nType `/doubt <your question>` in chat to resolve doubts instantly.", parse_mode="Markdown")
+
+    elif data == "referral":
+        bot_info = await context.bot.get_me()
+        ref_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id = ?", (user_id,))
+        ref_count = cursor.fetchone()[0]
+        cursor.execute("SELECT points FROM users WHERE user_id = ?", (user_id,))
+        pts = cursor.fetchone()[0]
+        conn.close()
+
+        text = (
+            f"🎁 **REFERRAL & VIRAL GROWTH PROGRAM:**\n\n"
+            f"Your referral link:\n`{ref_link}`\n\n"
+            f"📊 **Stats:** Referrals: `{ref_count}` | Total Points: `{pts}`\n"
+            f"💡 *Earn +50 Points for every friend who joins!*"
         )
+        await update.effective_message.reply_text(text, parse_mode="Markdown")
+
+    elif data == "leaderboard":
+        await leaderboard_command(update, context)
+
+    elif data == "dashboard":
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT points, streak, level, goal FROM users WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            pts, streak, lvl, goal = row
+            text = (
+                f"📊 **PERSONAL PROGRESS CARD**\n\n"
+                f"👤 Aspirant: **{query.from_user.first_name}**\n"
+                f"🎖️ Status: `{lvl}`\n"
+                f"⭐ Points: `{pts}`\n"
+                f"🔥 Streak: `{streak} Days`\n"
+                f"🎯 Locked Goal: `{goal}`"
+            )
+        else:
+            text = "⚠️ Dashboard data unavailable."
+            
+        await update.effective_message.reply_text(text, parse_mode="Markdown")
 
     elif data.startswith("ansmock_"):
         parts = data.split("_")
         subj, ans_idx = parts[1], int(parts[2])
         q = MOCK_BANK[subj][0]
         
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
         if ans_idx == q["ans"]:
-            USER_POINTS[user_id] = USER_POINTS.get(user_id, 0) + 20
-            res = f"✅ **Correct! (+20 Points)**\n\n💡 **Explanation:** {q['exp']}"
+            cursor.execute("UPDATE users SET points = points + 20 WHERE user_id = ?", (user_id,))
+            cursor.execute("UPDATE stats SET total_quizzes = total_quizzes + 1, correct_answers = correct_answers + 1 WHERE user_id = ?", (user_id,))
+            res = f"✅ **Correct Answer! (+20 Points)**\n\n💡 **Explanation:** {q['exp']}"
         else:
+            cursor.execute("UPDATE stats SET total_quizzes = total_quizzes + 1 WHERE user_id = ?", (user_id,))
             res = f"❌ **Incorrect!**\n\n💡 **Explanation:** {q['exp']}"
             
-        keyboard = [[InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]]
-        await query.message.reply_text(res, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    elif data == "ca_express":
-        text = (
-            "📰 **Daily Current Affairs Express:**\n\n"
-            "1. RBI updates key policy rates to maintain monetary stability.\n"
-            "2. India announces new renewable energy initiative target for 2030.\n"
-            "3. National Sports Awards winners felicitated.\n\n"
-            "📌 *For full daily PDF digests, check our main channel!*"
-        )
-        keyboard = [
-            [InlineKeyboardButton("📥 Download PDF", url=FORCE_JOIN_LINK)],
-            [InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]
-        ]
-        await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    elif data == "syllabus_hub":
-        keyboard = [
-            [InlineKeyboardButton("🔴 SSC CGL / CHSL", url=FORCE_JOIN_LINK), InlineKeyboardButton("🚆 Railway NTPC", url=FORCE_JOIN_LINK)],
-            [InlineKeyboardButton("🏦 Bank PO / Clerk", url=FORCE_JOIN_LINK), InlineKeyboardButton("👮 Defence / Police", url=FORCE_JOIN_LINK)],
-            [InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]
-        ]
-        await query.message.reply_text("📄 **Official Syllabus & PYQ Portal:**", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data == "ai_doubt":
-        USER_STATE[user_id] = "awaiting_ai_question"
-        await query.message.reply_text("⚡ **AI Exam Assistant Active!**\n\nType any concept or doubt message in chat:")
-
-    elif data == "flashcards":
-        text = "📘 **Flashcard:**\n\n**Q:** Which article of the Constitution deals with Fundamental Rights?\n\n*Tap to reveal answer!*"
-        keyboard = [[InlineKeyboardButton("👁️ Reveal Answer", callback_data="ans_fc")]]
-        await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    elif data == "ans_fc":
-        await query.message.edit_text("📘 **Flashcard:**\n\n**A:** Articles 12 to 35 (Part III of the Constitution)", parse_mode="Markdown")
-
-    elif data == "vocab":
-        text = (
-            "🗣️ **Vocabulary & Idioms Booster:**\n\n"
-            "• **Word:** *Prudent* (बुद्धिमान/विवेकपूर्ण)\n"
-            "• **Meaning:** Acting with or showing care for the future.\n"
-            "• **Idiom:** *Hit the nail on the head* (सटीक बात कहना)"
-        )
-        await query.message.reply_text(text, parse_mode="Markdown")
-
-    elif data == "calc_score":
-        text = (
-            "🧮 **Negative Score Formula:**\n\n"
-            "`Final Score = (Correct Answers × Marks) - (Wrong Answers × Negative Penalty)`\n\n"
-            "• SSC Format: +2 for Correct, -0.50 for Wrong\n"
-            "• Banking Format: +1 for Correct, -0.25 for Wrong"
-        )
-        await query.message.reply_text(text, parse_mode="Markdown")
-
-    elif data == "calc_age_info":
-        await query.message.reply_text("🎂 Use `/age DD-MM-YYYY Cutoff_DD-MM-YYYY` to compute exact cutoff eligibility.", parse_mode="Markdown")
-
-    elif data == "exam_timer":
-        today = datetime.date.today()
-        ssc_days = (datetime.date(2026, 9, 15) - today).days
-        rrb_days = (datetime.date(2026, 11, 10) - today).days
-        text = f"📅 **Target Countdown:**\n\n⏳ **SSC CGL 2026:** {ssc_days} Days\n⏳ **RRB NTPC 2026:** {rrb_days} Days"
-        await query.message.reply_text(text, parse_mode="Markdown")
-
-    elif data == "formula_categories":
-        text = (
-            "📐 **Quick Formula Bank:**\n\n"
-            "• **Algebra:** `(a + b)² = a² + b² + 2ab`\n"
-            "• **Trigonometry:** `sin²θ + cos²θ = 1`\n"
-            "• **Physics:** `Work = Force × Displacement`"
-        )
-        await query.message.reply_text(text, parse_mode="Markdown")
-
-    elif data == "referral":
-        bot_info = await context.bot.get_me()
-        ref_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
-        refs = USER_REFERRALS.get(user_id, 0)
-        pts = USER_POINTS.get(user_id, 0)
-        text = (
-            f"🎁 **Referral Program:**\n\n"
-            f"Your referral link:\n`{ref_link}`\n\n"
-            f"📊 **Stats:** Referrals: `{refs}` | Points: `{pts}`"
-        )
-        await query.message.reply_text(text, parse_mode="Markdown")
-
-    elif data == "leaderboard":
-        text = (
-            "🏆 **Global Aspirants Leaderboard:**\n\n"
-            "1. 🥇 Rahul Sharma - 1,250 Pts\n"
-            "2. 🥈 Priya Singh - 980 Pts\n"
-            "3. 🥉 Amit Kumar - 850 Pts"
-        )
-        await query.message.reply_text(text, parse_mode="Markdown")
-
-    elif data == "pdf_tools":
-        text = (
-            "🛠️ **Form Utilities Suite:**\n\n"
-            "• SSC Photo Specs: 3.5cm x 4.5cm (<50KB)\n"
-            "• Signature Specs: 10KB - 20KB JPG\n"
-            "• PDF Compression & Merger guidance"
-        )
-        await query.message.reply_text(text, parse_mode="Markdown")
-
-    elif data == "dashboard":
-        pts = USER_POINTS.get(user_id, 0)
-        notes_cnt = len(USER_NOTES.get(user_id, []))
-        refs = USER_REFERRALS.get(user_id, 0)
-        lvl = USER_LEVELS.get(user_id, "Beginner Aspirant")
-        text = (
-            f"📊 **Personal Dashboard:**\n\n"
-            f"👤 User: {query.from_user.first_name}\n"
-            f"🎖️ Level: `{lvl}`\n"
-            f"⭐ Points: `{pts}`\n"
-            f"📝 Notes Saved: `{notes_cnt}`\n"
-            f"👥 Referrals: `{refs}`"
-        )
-        await query.message.reply_text(text, parse_mode="Markdown")
-
-    elif data == "main_menu":
-        await start(update, context)
-
-# ================= MESSAGE HANDLER =================
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    state = USER_STATE.get(user_id)
-    text = update.message.text.strip()
-
-    if state == "awaiting_ai_question":
-        ans = (
-            f"🤖 **AI Exam Tutor Solution:**\n\n"
-            f"Regarding: *\"{text}\"*\n\n"
-            f"👉 **Key Concept:** This is an important topic for Sarkari exams. "
-            f"Always revise fundamental definitions and practice PYQs."
-        )
-        await update.message.reply_text(ans, parse_mode="Markdown")
-        USER_STATE[user_id] = None
+        conn.commit()
+        conn.close()
+        
+        await update.effective_message.reply_text(res, parse_mode="Markdown")
 
 # ================= MAIN RUNNER =================
 
@@ -464,20 +479,19 @@ def main():
 
     # Commands
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("timetable", generate_timetable))
-    app.add_handler(CommandHandler("eligible", check_eligibility))
-    app.add_handler(CommandHandler("notes", add_note))
-    app.add_handler(CommandHandler("mynotes", get_notes))
-    app.add_handler(CommandHandler("age", age_command))
-    app.add_handler(CommandHandler("remind", set_reminder))
-    app.add_handler(CommandHandler("shorten", shorten_command))
+    app.add_handler(CommandHandler("report", report_command))
+    app.add_handler(CommandHandler("daily", daily_challenge))
+    app.add_handler(CommandHandler("plan", study_plan_command))
+    app.add_handler(CommandHandler("doubt", doubt_solver))
+    app.add_handler(CommandHandler("speedtest", speed_test))
+    app.add_handler(CommandHandler("goal", set_goal))
+    app.add_handler(CommandHandler("motivate", motivate))
+    app.add_handler(CommandHandler("leaderboard", leaderboard_command))
 
     # Handlers
     app.add_handler(CallbackQueryHandler(button_click))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("🤖 Sarkari Super-Bot Mega Edition is running with Port Binding...")
+    print("🤖 Sarkari Super-Bot PRO Edition with SQLite is Running...")
     app.run_polling()
 
 if __name__ == "__main__":
