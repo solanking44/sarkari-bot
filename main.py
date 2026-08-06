@@ -2,8 +2,10 @@ import os
 import datetime
 import asyncio
 import json
+import threading
 import urllib.request
 import urllib.parse
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -14,12 +16,30 @@ from telegram.ext import (
     ContextTypes,
 )
 
+# ================= DUMMY WEB SERVER FOR RENDER PORT BINDING =================
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Sarkari Super-Bot is running fine!")
+
+    def log_message(self, format, *args):
+        return  # Terminal log clean rakhne ke liye
+
+def start_health_check_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
+# Start Web Server Thread
+threading.Thread(target=start_health_check_server, daemon=True).start()
+
 # ================= CONFIGURATION =================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 GPLINKS_API_KEY = "28f7b134d7e185764342aa508fdb2a43b1e93970"
 LOG_CHANNEL_ID = "-1004379498816"
 FORCE_JOIN_LINK = "https://t.me/+UYT1dE4cXuA5NTVI"
-ADMIN_ID = os.getenv("ADMIN_ID", "123456789")  # Admin Telegram ID
+ADMIN_ID = os.getenv("ADMIN_ID", "123456789")
 
 # ================= IN-MEMORY DATABASE =================
 USER_NOTES = {}
@@ -30,7 +50,7 @@ USER_STATE = {}
 USER_LEVELS = {}
 ALL_USER_IDS = set()
 
-# Extended Mock Questions Bank by Subject
+# Mock Questions Bank
 MOCK_BANK = {
     "gk": [
         {"q": "Bharat ka sabse bada national park kaun sa hai?", "options": ["Gir", "Hemis", "Kaziranga", "Jim Corbett"], "ans": 1, "exp": "Hemis National Park (Ladakh) sabse bada hai."},
@@ -38,7 +58,7 @@ MOCK_BANK = {
     ],
     "maths": [
         {"q": "Agar ek rectangle ki length 20% badhe aur breadth 10% ghate, toh area me kya change hoga?", "options": ["+8%", "+10%", "-8%", "+12%"], "ans": 0, "exp": "Net change = 20 - 10 - (20x10)/100 = +8% increase."},
-        {"q": "pehli 5 prime numbers ka average kya hoga?", "options": ["5.2", "5.6", "6.0", "4.8"], "ans": 1, "exp": "Prime numbers = 2, 3, 5, 7, 11. Sum = 28/5 = 5.6."}
+        {"q": "Pehli 5 prime numbers ka average kya hoga?", "options": ["5.2", "5.6", "6.0", "4.8"], "ans": 1, "exp": "Prime numbers = 2, 3, 5, 7, 11. Sum = 28/5 = 5.6."}
     ],
     "reasoning": [
         {"q": "Odd one out chunie: Apple, Mango, Potato, Banana", "options": ["Apple", "Mango", "Potato", "Banana"], "ans": 2, "exp": "Potato ek vegetable/stem hai, baki sab fruits hain."},
@@ -161,7 +181,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/start` - Launch Main Navigation Menu\n"
         "• `/notes <text>` - Save personal study note\n"
         "• `/mynotes` - View all saved notes\n"
-        "• `/clearnotes` - Wipe out saved notes\n"
         "• `/age <DD-MM-YYYY> <Cutoff DD-MM-YYYY>` - Precise age calculation\n"
         "• `/remind <mins> <msg>` - Set live study alarm\n"
         "• `/timetable <daily_hours>` - Generate instant custom schedule\n"
@@ -172,7 +191,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
 async def generate_timetable(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Personal Study Timetable Generator"""
     try:
         hours = float(context.args[0])
         if hours < 1 or hours > 16:
@@ -196,7 +214,6 @@ async def generate_timetable(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("⚠️ Usage: `/timetable <daily_study_hours>`\nExample: `/timetable 6`", parse_mode="Markdown")
 
 async def check_eligibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Exam Eligibility Checker"""
     if not context.args:
         await update.message.reply_text("⚠️ Usage: `/eligible 10th` OR `/eligible 12th` OR `/eligible Graduate`", parse_mode="Markdown")
         return
@@ -210,26 +227,6 @@ async def check_eligibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "🎓 **Exams Eligible for Graduates:**\n• SSC CGL & CPO\n• UPSC CSE / CDS\n• IBPS PO & Clerk / SBI PO\n• Railway NTPC (Graduate Posts)"
     
     await update.message.reply_text(text, parse_mode="Markdown")
-
-async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin Broadcast Command"""
-    if str(update.effective_user.id) != str(ADMIN_ID):
-        await update.message.reply_text("❌ Admin access required.")
-        return
-    
-    msg = " ".join(context.args)
-    if not msg:
-        await update.message.reply_text("⚠️ Usage: `/broadcast <message>`", parse_mode="Markdown")
-        return
-
-    count = 0
-    for uid in ALL_USER_IDS:
-        try:
-            await context.bot.send_message(chat_id=uid, text=f"📢 **ADMIN ANNOUNCEMENT:**\n\n{msg}", parse_mode="Markdown")
-            count += 1
-        except Exception:
-            pass
-    await update.message.reply_text(f"✅ Broadcast sent to {count} users.", parse_mode="Markdown")
 
 async def add_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -454,7 +451,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🤖 **AI Exam Tutor Solution:**\n\n"
             f"Regarding: *\"{text}\"*\n\n"
             f"👉 **Key Concept:** This is an important topic for Sarkari exams. "
-            f"Always revise fundamental definitions, solve at least 15 PYQs on this pattern, and track speed."
+            f"Always revise fundamental definitions and practice PYQs."
         )
         await update.message.reply_text(ans, parse_mode="Markdown")
         USER_STATE[user_id] = None
@@ -469,7 +466,6 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("timetable", generate_timetable))
     app.add_handler(CommandHandler("eligible", check_eligibility))
-    app.add_handler(CommandHandler("broadcast", admin_broadcast))
     app.add_handler(CommandHandler("notes", add_note))
     app.add_handler(CommandHandler("mynotes", get_notes))
     app.add_handler(CommandHandler("age", age_command))
@@ -480,7 +476,7 @@ def main():
     app.add_handler(CallbackQueryHandler(button_click))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("🤖 Sarkari Super-Bot Mega Edition is running...")
+    print("🤖 Sarkari Super-Bot Mega Edition is running with Port Binding...")
     app.run_polling()
 
 if __name__ == "__main__":
