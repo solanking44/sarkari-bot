@@ -173,7 +173,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "India's #1 Ultra-Advanced Exam Preparation Portal.\n"
         "Select any feature below to start learning:"
     )
-    await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
+    # Fixed line: effective_message automatically handles both direct messages and callback query messages
+    await update.effective_message.reply_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
