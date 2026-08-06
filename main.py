@@ -10,6 +10,7 @@ from handlers.menus import send_main_menu, menu_callback_handler
 from handlers.tools import handle_photo_upload, convert_to_pdf_callback, calculate_age, USER_STATE
 from handlers.quiz import start_quiz_handler, quiz_answer_handler, leaderboard_handler
 from handlers.admin import broadcast_command, add_job_command
+from handlers.ai_helper import get_ai_response
 
 logging.basicConfig(level=logging.INFO)
 
@@ -21,23 +22,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     mode = USER_STATE.get(user_id)
+    text = update.message.text.strip()
     
     if mode == "awaiting_age_input":
-        text = update.message.text.strip()
         try:
             dob_str, cutoff_str = [x.strip() for x in text.split("|")]
             years, months, days = await calculate_age(dob_str, cutoff_str)
-            
-            res_text = (
-                f"🎂 **Age Calculation Result:**\n\n"
-                f"• **DOB:** {dob_str}\n"
-                f"• **Age as on {cutoff_str}:**\n"
-                f"👉 **{years} Years, {months} Months, {days} Days**"
-            )
+            res_text = f"🎂 **Age Calculation Result:**\n\n👉 **{years} Years, {months} Months, {days} Days**"
             await update.message.reply_text(res_text, parse_mode="Markdown")
             USER_STATE[user_id] = None
         except Exception:
-            await update.message.reply_text("❌ Invalid Format! Please send in format: `DD-MM-YYYY | DD-MM-YYYY`", parse_mode="Markdown")
+            await update.message.reply_text("❌ Format: `DD-MM-YYYY | DD-MM-YYYY`", parse_mode="Markdown")
+
+    else:
+        # Fast AI Response using Groq Llama3 Engine
+        status_msg = await update.message.reply_text("⚡ Groq AI is thinking...")
+        ai_reply = await get_ai_response(text)
+        await status_msg.edit_text(f"🤖 **Groq AI Answer:**\n\n{ai_reply}", parse_mode="Markdown")
+        USER_STATE[user_id] = None
 
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -48,16 +50,16 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data in ["check_subscription", "main_menu"]:
         await send_main_menu(update, context)
+    elif data == "set_ai_mode":
+        USER_STATE[query.from_user.id] = "awaiting_ai_prompt"
+        await query.message.reply_text("⚡ **Groq AI Exam Tutor Mode Active!**\n\nApna doubt ya question message me likhkar bhejein.")
     elif data == "set_age_calc":
         USER_STATE[query.from_user.id] = "awaiting_age_input"
-        await query.message.reply_text(
-            "🎂 **Sarkari Age Calculator**\n\nApni Date of Birth aur Form Cutoff Date is format me bhejein:\n\n`DD-MM-YYYY | DD-MM-YYYY`\n\n*Example:* `15-08-2000 | 01-01-2026`",
-            parse_mode="Markdown"
-        )
+        await query.message.reply_text("🎂 Send dates as: `DD-MM-YYYY | DD-MM-YYYY`", parse_mode="Markdown")
     elif data.startswith("set_"):
         mode = data.replace("set_", "")
         USER_STATE[query.from_user.id] = mode
-        msg = "📸 **Send your photo now.**" if mode == "photo_50" else "✍️ **Send your signature image.**"
+        msg = "📸 **Send photo now.**" if mode == "photo_50" else "✍️ **Send signature image.**"
         if mode == "img_pdf":
             msg = "📄 **Send images one by one** for PDF conversion."
         await query.message.reply_text(msg, parse_mode="Markdown")
@@ -86,5 +88,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo_upload))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
 
-    print("🤖 Sarkari Bot is up & running...")
+    print("🤖 Sarkari Bot powered by Groq AI is running...")
     app.run_polling()
