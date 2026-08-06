@@ -3,19 +3,21 @@ from config import GROQ_API_KEY
 
 async def get_ai_response(prompt: str) -> str:
     if not GROQ_API_KEY:
-        return "⚠️ Groq AI Service abhi configured nahi hai."
+        return "⚠️ Groq API Key configured nahi hai. Admin se check karne ko kahein."
     
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
+    
+    # Updated model: llama-3.1-8b-instant
     payload = {
-        "model": "llama3-8b-8192",
+        "model": "llama-3.1-8b-instant",
         "messages": [
             {
                 "role": "system", 
-                "content": "You are a professional Sarkari Exam Expert Tutor. Answer user questions accurately, concisely, and clearly in clear Hindi/Hinglish."
+                "content": "You are an expert Sarkari Exam Tutor. Answer accurately and clearly in simple Hindi/Hinglish."
             },
             {
                 "role": "user", 
@@ -27,12 +29,15 @@ async def get_ai_response(prompt: str) -> str:
     }
     
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=20.0) as client:
             res = await client.post(url, headers=headers, json=payload)
             data = res.json()
-            if "choices" in data and len(data["choices"]) > 0:
+            
+            if res.status_code == 200 and "choices" in data and len(data["choices"]) > 0:
                 return data["choices"][0]["message"]["content"]
+            elif "error" in data:
+                return f"⚠️ API Error: {data['error'].get('message', 'Unknown error')}"
             else:
-                return "❌ AI Answer parse nahi ho saka. Kripya punah prayas karein."
+                return "❌ AI Answer generate nahi ho saka. Thodi der baad try karein."
     except Exception as e:
-        return "⚡ AI Engine abhi busy hai, kripya thodi der baad sawaal poochein."
+        return f"⚡ Request error: {str(e)}"
